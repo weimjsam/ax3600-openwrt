@@ -32,8 +32,8 @@ jobs:
             - name: Pull OpenWrt source
               uses: actions/checkout@v4
               with:
-                repository: weimjsam/openwrt-ipq
-                ref: qualcommax-6.1-nss-wifi-diy
+                repository: coolsnowwolf/lede
+                ref: master
                 path: openwrt
             - name: Get OpenWrt source Info
               id: openwrt_source_repo_info
