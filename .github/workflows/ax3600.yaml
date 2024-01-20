@@ -32,8 +32,8 @@ jobs:
             - name: Pull OpenWrt source
               uses: actions/checkout@v4
               with:
-                repository: coolsnowwolf/lede
-                ref: master
+                repository: qosmio/openwrt-ipq
+                ref: 5.15-qsdk11
                 path: openwrt
             - name: Get OpenWrt source Info
               id: openwrt_source_repo_info
