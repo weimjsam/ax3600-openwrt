@@ -1,0 +1,160 @@
+name: Build ax6-5.10
+
+on: 
+    workflow_dispatch:
+      #    schedule:
+      #  - cron: '0 0 * * *'
+jobs:
+    build:
+        name: Prepare and build ax6-5.10 generic images
+        runs-on: ubuntu-latest
+        permissions: write-all
+        outputs:
+          OPENWRT_SOURCE_REPO_URL: ${{ steps.openwrt_source_repo_info.outputs.OPENWRT_SOURCE_REPO_URL }}
+          OPENWRT_SOURCE_REF: ${{ steps.openwrt_source_repo_info.outputs.OPENWRT_SOURCE_REF }}
+          OPENWRT_SOURCE_SHA: ${{ steps.openwrt_source_repo_info.outputs.OPENWRT_SOURCE_SHA }}
+        steps:
+            - name: Maximize build space
+              uses: easimon/maximize-build-space@master
+              with:
+                root-reserve-mb: 8192
+                temp-reserve-mb: 2048
+                remove-dotnet: 'true'
+                remove-android: 'true'
+                remove-haskell: 'true'
+                remove-codeql: 'true'
+            - name: show space
+              run: |
+                df -h
+            - name: Checkout
+              uses: actions/checkout@v4
+              id: octokit
+            - name: Pull OpenWrt source
+              uses: actions/checkout@v4
+              with:
+                repository: coolsnowwolf/lede
+                ref: master
+                path: openwrt
+            - name: Get OpenWrt source Info
+              id: openwrt_source_repo_info
+              run: |
+                cd openwrt
+                echo "OPENWRT_SOURCE_REPO_URL=$(git config --get remote.origin.url)" >> "$GITHUB_OUTPUT"
+                echo "OPENWRT_SOURCE_REF=$(git rev-parse --abbrev-ref HEAD)" >> "$GITHUB_OUTPUT"
+                echo "OPENWRT_SOURCE_SHA=$(/usr/bin/git log -1 --format='%H')" >> "$GITHUB_OUTPUT"
+            - name: Make cache paths
+              run: |
+                cd openwrt
+                git config --global user.name "${GITHUB_ACTOR}"
+                git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+                ls ../patches | xargs -I {} git apply -v ../patches/{}
+                git rev-parse --short HEAD > ../lastest-commit
+                mkdir -p {dl,build_dir,staging_dir}
+            - uses: actions/cache@v3
+              name: Cache
+              with:
+                path: |
+                  openwrt/dl
+                  openwrt/build_dir
+                  openwrt/staging_dir
+                key: cache-key-${{ github.run_id }}
+                restore-keys: |
+                  cache-key
+            - name: Prepare
+              run: |
+                mv openwrt.sh openwrt
+                cd openwrt
+                bash openwrt.sh
+                mkdir -p files/etc/uci-defaults
+                ls ../files/ | xargs -I "{}" cp -rf ../files/{} files/
+            - name: Update and install feeds
+              run: |
+                cd openwrt
+                ./scripts/feeds update -a
+                echo "exit 0" > feeds/packages/net/unbound/files/unbound.ntpd
+                sed -i "s/rm -f \$UB_RESOLV_CONF/return 0/g" feeds/packages/net/unbound/files/unbound.sh
+                ./scripts/feeds install -a
+            - name: Download package sources
+              run: |
+                mv 5.10.config openwrt/.config
+                cd openwrt
+                make defconfig V=s
+                make download V=s
+            - name: Build tools
+              run: |
+                cd openwrt
+                make tools/install -j $(($(nproc)+1)) V=s || \
+                make tools/install V=s
+            - name: Build toolchain
+              run: |
+                cd openwrt
+                make toolchain/install -j $(($(nproc)+1)) V=s || \
+                make toolchain/install V=s
+            - name: Build target images
+              run: |
+                cd openwrt
+                make -j $(($(nproc)+1)) V=s || \
+                make V=s
+            - name: TAR output
+              run: |
+                cp openwrt/.config openwrt/bin/targets/qualcommax/ipq807x/buildconfig
+                tar -cvf ipq807xx-images.tar openwrt/bin/targets/
+            - name: Upload artifacts
+              uses: actions/upload-artifact@v3
+              with:
+                name: ipq807x-images
+                path: ipq807xx-images.tar
+            - name: Clean for cache
+              run: |
+                cd openwrt
+                make clean V=s
+            - name: Cleanup old cache
+              env:
+                GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                gh extension install actions/gh-actions-cache
+                REPO=${{ github.repository }}
+                BRANCH=master
+
+                echo "Fetching list of cache key"
+                cacheKeysForPR=$(gh actions-cache list -R $REPO -B $BRANCH | cut -f 1 )
+
+                ## Setting this to not fail the workflow while deleting cache keys. 
+                set +e
+                echo "Deleting caches..."
+                for cacheKey in $cacheKeysForPR
+                do
+                   gh actions-cache delete $cacheKey -R $REPO -B $BRANCH --confirm
+                done
+                echo "Done"
+    release:
+          name: Make a release
+          runs-on: ubuntu-latest
+          needs: build
+          steps:
+            - name: Download the image artifacts
+              uses: actions/download-artifact@v3
+              with:
+                name: ipq807x-images
+
+            - name: Extract the image artifacts
+              run: tar xf ipq807xx-images.tar
+
+            - name: Get the current date
+              run: echo "NOW=$(date +%F-%H%M)" >> $GITHUB_ENV
+            - name: Generate bodyFile
+              run: |
+                echo "Repository URL: ${{ needs.build.outputs.OPENWRT_SOURCE_REPO_URL }}" >> bodyFile
+                echo "Git Reference: ${{ needs.build.outputs.OPENWRT_SOURCE_REF }}" >> bodyFile
+                echo "SHA: ${{ needs.build.outputs.OPENWRT_SOURCE_SHA }}" >> bodyFile
+                realpath bodyFile
+                cat bodyFile
+            - name: Create a release
+              uses: "ncipollo/release-action@v1"
+              with:
+                name: "Updated prebuilt images ${{ env.NOW }}"
+                tag: "ax6-5.10-${{ env.NOW }}"
+                makeLatest: true
+                bodyFile: bodyFile
+                artifacts: openwrt/bin/targets/qualcommax/ipq807x/*
+                token: "${{ secrets.GITHUB_TOKEN }}"
