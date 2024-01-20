@@ -32,7 +32,7 @@ jobs:
             - name: Pull OpenWrt source
               uses: actions/checkout@v4
               with:
-                repository: qosmio/openwrt-ipq
+                repository: weimjsam/openwrt-ipq
                 ref: qualcommax-6.1-nss-wifi-diy
                 path: openwrt
             - name: Get OpenWrt source Info
